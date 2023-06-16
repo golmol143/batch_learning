@@ -1,0 +1,7 @@
+outputs/
+plots/
+__pycache__/
+.tmp.driveupload/
+.vscode/
+*.pyc
+*.pem
