@@ -4,6 +4,7 @@ from typing import List, Dict, Optional
 
 from scipy.stats import binom
 import numpy as np
+import torch as tr
 import matplotlib.pyplot as plt
 from scipy.special import comb
 
@@ -13,6 +14,12 @@ class IterativeAlgoResults:
     thetas: np.ndarray
     weights: List[np.ndarray]
     capacities: List[float]
+
+@dataclass
+class IterativeAlgoStats:
+    delta: float
+    alpha: float
+    pool_size: float
 
 
 @dataclass
@@ -89,6 +96,7 @@ class IterativeAlgorithmSolver:
         }
         self.solution: Optional[IterativeAlgoResults] = None
         self._divergences_per_iteration = []
+        self.stats: Optional[IterativeAlgoStats] = None
 
     def _get_type_probability_all_thetas(self, number_of_outcomes: int) -> Dict[float, np.ndarray]:
             return _get_type_probabilities_vs_theta(number_of_outcomes=number_of_outcomes, thetas=self.thetas)
@@ -167,7 +175,8 @@ class IterativeAlgorithmSolver:
         best_weights = self.solution.weights[-1]
         plt.plot(self.solution.thetas, best_weights, label='weights')
         plt.plot(self.solution.thetas, self._divergences_per_iteration[-1], label='divergences')
-        plt.title('weight per theta')
+        plt.suptitle('weight per theta')
+        plt.title(r'$\delta$={}, $\alpha$={}, pool={}'.format(self.stats.delta, self.stats.alpha, self.stats.pool_size))
         plt.legend()
         plt.waitforbuttonpress()
         plt.close()
@@ -178,6 +187,44 @@ class IterativeAlgorithmSolver:
         plt.title('probability of next symbol being one given type')
         plt.waitforbuttonpress()
         plt.close()
+
+    def save_results(self):
+        t = time.localtime()
+        input_x_output = '{}x{}_'.format(len(self.thetas), self.training_set_size)
+        file_name = time.strftime("%H-%M-%S_%d-%m-%Y.pt", t)
+        file_obj = {'theta': self.solution.thetas, 'w': self.solution.weights, 'C': self.solution.capacities, 'D': self._divergences_per_iteration}
+
+        path = './outputs/conditional/'
+        tr.save(file_obj, path+input_x_output+file_name)
+
+    def load_starting_point(self, file_path=None):
+
+        if file_path is None:
+            return
+
+        f = tr.load(file_path)
+        self.thetas = f['theta']
+        self.weights = f['w'][-1]
+
+    def get_side_pool_size(self):
+
+        best_weights = self.solution.weights[-1]
+        alpha = best_weights[int(len(best_weights)/2)]
+        threshold = alpha / 10
+        for index in range(int(len(best_weights)/2), len(best_weights)):
+            if abs(best_weights[index] - alpha) > threshold or abs(best_weights[index] - best_weights[index - 1]) > threshold:
+                return 1 - self.solution.thetas[index]
+        return 1
+
+    def get_result_stats(self) -> IterativeAlgoStats:
+
+        best_weights = self.solution.weights[-1]
+        delta = max(best_weights)
+        alpha = best_weights[int(len(best_weights)/2)]
+        pool_size = self.get_side_pool_size()
+
+        res_stats = IterativeAlgoStats(delta=delta, alpha=alpha, pool_size=pool_size)
+        return res_stats 
 
     def single_step_am(self, iterations: int) -> IterativeAlgoResults:
         iteration = 0
@@ -196,12 +243,50 @@ class IterativeAlgorithmSolver:
         self.solution = IterativeAlgoResults(
             weights=weights_per_iteration, capacities=capacities_per_iteration, thetas=self.thetas
         )
+        self.stats = self.get_result_stats()
         return self.solution
+
+def plot_stats(results):
+
+    print('Training size\tDelta\t\tAlpha\t\tPool size')
+    for training_set_size in results.keys():
+        print('{}\t\t{}\t{}\t{}'.format(training_set_size, results[training_set_size][1].delta, results[training_set_size][1].alpha, results[training_set_size][1].pool_size))
 
 
 if __name__ == '__main__':
-    t0 = time.time()
-    solver = IterativeAlgorithmSolver(number_of_thetas=100, training_set_size=100)
-    results = solver.single_step_am(iterations=2500)
-    print(f'total running time: {time.time() - t0}')
-    solver.plot_results()
+
+    results_dict: Dict[int, tuple] = {}
+
+    training_set_size = 100
+    training_set_size_step = 100
+    number_of_thetas = 300
+    number_of_thetas_step = 50
+    iterations = 2000
+    iterations_step = 50
+
+    start_string = 'stats_{}-'.format(training_set_size)
+    for _ in range(20):
+        t0 = time.time()
+        solver = IterativeAlgorithmSolver(number_of_thetas=number_of_thetas, training_set_size=training_set_size)
+        solver.load_starting_point()#'./outputs/conditional/100x100_14-38-50_17-06-2023.pt')
+        results = solver.single_step_am(iterations=iterations)
+        print(f'total running time: {time.time() - t0}')
+        solver.save_results()
+        results_dict[training_set_size] = (solver.solution, solver.stats)
+
+        # solver.plot_results()
+
+        training_set_size   += training_set_size_step
+        number_of_thetas    += number_of_thetas_step
+        iterations          += iterations_step
+
+    t = time.localtime()
+    start_string += '--{}_'.format(training_set_size)
+    file_name = time.strftime("%H-%M-%S_%d-%m-%Y.pt", t)
+    path = './outputs/conditional/'
+    tr.save(results_dict, path+start_string+file_name)
+
+    # file_path = './outputs/conditional/stats_100---2100_02-55-25_18-06-2023.pt'
+    # results_dict = tr.load(file_path)
+
+    plot_stats(results_dict)
