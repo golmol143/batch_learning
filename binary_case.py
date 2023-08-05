@@ -15,16 +15,18 @@ PositiveSamples = int
 
 ProbabilityAssigner = Callable[[Samples, PositiveSamples], float]
 
+CUDA_DEVICE = tr.device('cuda')
+
 @dataclass
 class IterativeAlgoResults:
-    thetas: tr.tensor
-    weights: List[tr.tensor]
+    thetas: tr.Tensor
+    weights: List[tr.Tensor]
     capacities: List[float]
 
 @dataclass
 class SingleSolution:
-    thetas: np.ndarray
-    weights: np.ndarray
+    thetas: tr.Tensor
+    weights: tr.Tensor
 
 @dataclass
 class NextSymbolProbabilities:
@@ -33,7 +35,7 @@ class NextSymbolProbabilities:
 
 
 def get_type_probabilities_given_theta(theta: float, number_of_outcomes: int) -> tr.tensor:
-    return tr.tensor([binom.pmf(index, number_of_outcomes, theta) for index in range(number_of_outcomes + 1)])
+    return tr.tensor([binom.pmf(index, number_of_outcomes, theta) for index in range(number_of_outcomes + 1)]).to(device=CUDA_DEVICE)
 
 
 def get_binary_entropy(theta: float) -> float:
@@ -43,12 +45,12 @@ def get_binary_entropy(theta: float) -> float:
 
 
 def _get_types_log_binomial_coefficients(number_of_outcomes: int) -> tr.tensor:
-    return tr.log(tr.tensor([comb(number_of_outcomes, k) for k in range(number_of_outcomes + 1)]))
+    return tr.log(tr.tensor([comb(number_of_outcomes, k) for k in range(number_of_outcomes + 1)])).to(device=CUDA_DEVICE)
 
 
 def _get_type_probabilities_vs_theta(thetas: tr.tensor, number_of_outcomes: int) -> Dict[float, tr.tensor]:
     return {
-        theta.item(): get_type_probabilities_given_theta(theta=theta, number_of_outcomes=number_of_outcomes)
+        theta.item(): get_type_probabilities_given_theta(theta=theta.cpu(), number_of_outcomes=number_of_outcomes)
         for theta in thetas
     }
 
@@ -135,9 +137,9 @@ def get_braess_probability_assignment_for_each_case(samples: int) -> np.ndarray:
 
 
 def _translate_probability_to_add_beta(positives: int, samples: int, probability: float, default_val: float = 0) -> float:
-    if np.abs(probability - 0.5) < 0.001:
+    if tr.abs(probability - 0.5) < 0.001:
         return default_val
-    return float(np.divide(probability * samples - positives, 1 - 2 * probability))
+    return float(tr.divide(probability * samples - positives, 1 - 2 * probability))
 
 
 def _translate_probabilities_to_add_beta(probabilities: NextSymbolProbabilities) -> np.ndarray:
@@ -161,8 +163,8 @@ class IterativeAlgorithmSolver:
     ):
         t0 = time.time()
         self.number_of_thetas = number_of_thetas
-        self.thetas = np.linspace(0.2, 0.8, self.number_of_thetas)
-        self.weights = self.thetas*0 + np.divide(1, number_of_thetas)
+        self.thetas = tr.linspace(0, 1, self.number_of_thetas).to(device=CUDA_DEVICE)
+        self.weights = (self.thetas*0 + tr.divide(1, number_of_thetas)).to(device=CUDA_DEVICE)
         self.training_set_size = training_set_size
         self.whole_sequence_size = self.training_set_size + 1
         if initialization is not None:
@@ -171,18 +173,18 @@ class IterativeAlgorithmSolver:
             )
         else:
             if use_braess_sauer_as_initialization:
-                divergences_exp = np.exp(np.asarray(
+                divergences_exp = tr.exp(tr.tensor(
                     [get_average_regret(
-                        probability_assigner=braess_probability_assignment, p=p, samples=self.training_set_size
+                        probability_assigner=braess_probability_assignment, p=p.cpu(), samples=self.training_set_size
                     ) for p in self.thetas]))
                 normalization_factor = sum(divergences_exp)
-                self.weights = np.divide(divergences_exp, normalization_factor)
+                self.weights = tr.divide(divergences_exp, normalization_factor).to(device=CUDA_DEVICE)
         self.type_probabilities_given_theta: Dict[int, Dict[float, np.ndarray]] = {
             self.training_set_size: self._get_type_probability_all_thetas(self.training_set_size),
             self.whole_sequence_size: self._get_type_probability_all_thetas(self.whole_sequence_size)
         }
         self.max_divergence_to_average_divergence_ratio = []
-        self.types_log_binomial_coefficients: Dict[int, np.ndarray] = {
+        self.types_log_binomial_coefficients: Dict[int, tr.Tensor] = {
             self.training_set_size: _get_types_log_binomial_coefficients(self.training_set_size),
             self.whole_sequence_size: _get_types_log_binomial_coefficients(self.whole_sequence_size)
         }
@@ -198,7 +200,7 @@ class IterativeAlgorithmSolver:
         return -tr.sum(vector * (tr.log(vector) - self.types_log_binomial_coefficients[len(vector) - 1]))
 
     def get_average_probability_of_outcome(self, weights: tr.tensor, thetas: tr.tensor, number_of_outcomes: int):
-        probabilities = tr.tensor([0. for _ in range(number_of_outcomes + 1)])
+        probabilities = tr.tensor([0. for _ in range(number_of_outcomes + 1)]).to(device=CUDA_DEVICE)
         for index in range(len(weights)):
             curr_probabilities = self.type_probabilities_given_theta[number_of_outcomes][thetas[index].item()]
             probabilities += weights[index] * curr_probabilities
@@ -254,11 +256,11 @@ class IterativeAlgorithmSolver:
         self._divergences_per_iteration.append(divergences)
         average_divergence = sum(self.weights * divergences)
         self.max_divergence_to_average_divergence_ratio.append((max(divergences) / average_divergence))
-        unweighted_probabilities = self.weights * np.exp(divergences)
+        unweighted_probabilities = self.weights * tr.exp(divergences)
         self.weights = unweighted_probabilities / sum(unweighted_probabilities)
 
     def get_average_binary_entropy(self) -> float:
-        return sum([self.weights[i] * get_binary_entropy(self.thetas[i]) for i in range(len(self.thetas))])
+        return sum([self.weights[i] * get_binary_entropy(self.thetas[i].cpu()) for i in range(len(self.thetas))])
 
     def get_capacity(self):
         average_probabilities_training_size = self.get_average_probability_of_outcome(
@@ -277,33 +279,33 @@ class IterativeAlgorithmSolver:
         if self.solution is None:
             print('cant plot results because no solution was obtained')
             return
-        plt.plot(self.solution.capacities)
+        plt.plot(tr.tensor(self.solution.capacities, device='cpu'))
         plt.title('capacity per iteration')
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_capacity.png')
+        plt.savefig(f'plots/gpu/conditional/solver_n_{self.training_set_size}_capacity.png')
         # plt.waitforbuttonpress()
         plt.close()
-        plt.plot(self.max_divergence_to_average_divergence_ratio)
+        plt.plot(tr.tensor(self.max_divergence_to_average_divergence_ratio, device='cpu'))
         plt.title('max to average divergence ratio')
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_divergence.png')
+        plt.savefig(f'plots/gpu/conditional/solver_n_{self.training_set_size}_divergence.png')
         # plt.waitforbuttonpress()
         plt.close()
         best_weights = self.solution.weights[-1]
-        plt.plot(self.solution.thetas, best_weights, label='weights')
-        plt.plot(self.solution.thetas, self._divergences_per_iteration[-1], label='divergences')
-        x_range = max(self.solution.thetas) - min(self.solution.thetas)
-        plt.xlim(min(self.solution.thetas) + x_range/5, max(self.solution.thetas) - x_range/5)
+        plt.plot(self.solution.thetas.cpu(), best_weights.cpu(), label='weights')
+        plt.plot(self.solution.thetas.cpu(), self._divergences_per_iteration[-1].cpu(), label='divergences')
+        x_range = max(self.solution.thetas.cpu()) - min(self.solution.thetas.cpu())
+        plt.xlim(min(self.solution.thetas.cpu()) + x_range/5, max(self.solution.thetas.cpu()) - x_range/5)
         plt.title('weight per theta')
         plt.legend()
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_weight_short.png')
+        plt.savefig(f'plots/gpu/conditional/solver_n_{self.training_set_size}_weight_short.png')
         # plt.waitforbuttonpress()
         plt.close()
         best_weights = self.solution.weights[-1]
-        plt.semilogy(self.solution.thetas, best_weights, label='weights')
-        plt.semilogy(self.solution.thetas, self._divergences_per_iteration[-1], label='divergences')
-        plt.xlim(min(self.solution.thetas) + x_range/5, max(self.solution.thetas) - x_range/5)
+        plt.semilogy(self.solution.thetas.cpu(), best_weights.cpu(), label='weights')
+        plt.semilogy(self.solution.thetas.cpu(), self._divergences_per_iteration[-1].cpu(), label='divergences')
+        plt.xlim(min(self.solution.thetas.cpu()) + x_range/5, max(self.solution.thetas.cpu()) - x_range/5)
         plt.title('weight per theta')
         plt.legend()
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_weight_log_short.png')
+        plt.savefig(f'plots/gpu/conditional/solver_n_{self.training_set_size}_weight_log_short.png')
         # plt.waitforbuttonpress()
         plt.close()
         probabilities = self.probabilities_of_next_symbol_being_one()
@@ -311,11 +313,11 @@ class IterativeAlgorithmSolver:
         if isinstance(probabilities, list):
             plt.plot(list(range(self.training_set_size + 1)), probabilities, label='AM results')
         else:
-            plt.plot(list(range(self.training_set_size + 1)), probabilities.probability, label='AM results')
+            plt.plot(list(range(self.training_set_size + 1)), tr.tensor(probabilities.probability,device='cpu'), label='AM results')
         plt.plot(list(range(self.training_set_size + 1)), brass_probabilities, label='Braess-Sauer')
         plt.legend()
         plt.title('probability of next symbol being one given type')
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_p_next_symbol.png')
+        plt.savefig(f'plots/gpu/conditional/solver_n_{self.training_set_size}_p_next_symbol.png')
         # plt.waitforbuttonpress()
         plt.close()
         if not isinstance(probabilities, list):
@@ -325,7 +327,7 @@ class IterativeAlgorithmSolver:
             plt.plot([0, max(probabilities.training_type)], [0.75, 0.75], label='beta=0.75')
             plt.plot([0, max(probabilities.training_type)], [1, 1], label='beta=1')
             plt.title('derived add-beta')
-            plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_add_beta.png')
+            plt.savefig(f'plots/gpu/conditional/solver_n_{self.training_set_size}_add_beta.png')
             # plt.waitforbuttonpress()
             plt.close()
 
@@ -335,7 +337,7 @@ class IterativeAlgorithmSolver:
             return
         best_weights = self.solution.weights[-1]
         max_weight = max(best_weights)
-        median_weight = np.median(best_weights)
+        median_weight = tr.median(best_weights)
         min_weight = min(best_weights)
         much_lower_than_median = best_weights < median_weight*0.1
         much_lower_than_median_area = sum(much_lower_than_median) / len(best_weights)
@@ -399,16 +401,16 @@ def _main_dump_results(training_set_size: int, num_of_thetas: int, iterations: i
     )
     solver.single_step_am(iterations=iterations, calc_probability=True, minimal_divergence_ratio=1.001)
     # time_str = time.strftime("_%H-%M-%S_%d-%m-%Y", time.localtime())
-    pickle.dump(solver, open(f'outputs/conditional/solver_n_{training_set_size}.pkl', 'wb'))
+    pickle.dump(solver, open(f'outputs/gpu/conditional/solver_n_{training_set_size}.pkl', 'wb'))
 
 
 def _main_plot_results(training_set_size: int):
-    a: IterativeAlgorithmSolver = pickle.load(open(f'outputs/conditional/solver_n_{training_set_size}.pkl', 'rb'))
+    a: IterativeAlgorithmSolver = pickle.load(open(f'outputs/gpu/conditional/solver_n_{training_set_size}.pkl', 'rb'))
     a.plot_results()
 
 
 def _main_print_results(training_set_size: int):
-    a: IterativeAlgorithmSolver = pickle.load(open(f'outputs/conditional/solver_n_{training_set_size}.pkl', 'rb'))
+    a: IterativeAlgorithmSolver = pickle.load(open(f'outputs/gpu/conditional/solver_n_{training_set_size}.pkl', 'rb'))
     a.print_interesting_solution_properties()
 
 
