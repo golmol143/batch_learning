@@ -6,6 +6,7 @@ import os
 
 from scipy.stats import binom
 import numpy as np
+import torch as tr
 import matplotlib.pyplot as plt
 from scipy.special import comb
 
