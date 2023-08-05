@@ -17,8 +17,8 @@ ProbabilityAssigner = Callable[[Samples, PositiveSamples], float]
 
 @dataclass
 class IterativeAlgoResults:
-    thetas: np.ndarray
-    weights: List[np.ndarray]
+    thetas: tr.tensor
+    weights: List[tr.tensor]
     capacities: List[float]
 
 @dataclass
@@ -32,8 +32,8 @@ class NextSymbolProbabilities:
     probability: List[float]
 
 
-def get_type_probabilities_given_theta(theta: float, number_of_outcomes: int) -> np.ndarray:
-    return np.asarray([binom.pmf(index, number_of_outcomes, theta) for index in range(number_of_outcomes + 1)])
+def get_type_probabilities_given_theta(theta: float, number_of_outcomes: int) -> tr.tensor:
+    return tr.tensor([binom.pmf(index, number_of_outcomes, theta) for index in range(number_of_outcomes + 1)])
 
 
 def get_binary_entropy(theta: float) -> float:
@@ -42,13 +42,13 @@ def get_binary_entropy(theta: float) -> float:
     return - theta * np.log(theta) - ((1-theta) * np.log(1-theta))
 
 
-def _get_types_log_binomial_coefficients(number_of_outcomes: int) -> np.ndarray:
-    return np.log(np.asarray([comb(number_of_outcomes, k) for k in range(number_of_outcomes + 1)]))
+def _get_types_log_binomial_coefficients(number_of_outcomes: int) -> tr.tensor:
+    return tr.log(tr.tensor([comb(number_of_outcomes, k) for k in range(number_of_outcomes + 1)]))
 
 
-def _get_type_probabilities_vs_theta(thetas: np.ndarray, number_of_outcomes: int) -> Dict[float, np.ndarray]:
+def _get_type_probabilities_vs_theta(thetas: tr.tensor, number_of_outcomes: int) -> Dict[float, tr.tensor]:
     return {
-        theta: get_type_probabilities_given_theta(theta=theta, number_of_outcomes=number_of_outcomes)
+        theta.item(): get_type_probabilities_given_theta(theta=theta, number_of_outcomes=number_of_outcomes)
         for theta in thetas
     }
 
@@ -91,10 +91,10 @@ def get_average_regret(p: float, samples: int, probability_assigner: Probability
 
 
 def get_probability_for_next_symbol_being_one(
-    thetas: np.ndarray,
-    weights: np.ndarray,
+    thetas: tr.tensor,
+    weights: tr.tensor,
     training_set_size: int,
-    probability_of_type_given_theta: Optional[Dict[float, np.ndarray]] = None,
+    probability_of_type_given_theta: Optional[Dict[float, tr.tensor]] = None,
 ) -> NextSymbolProbabilities:
     training_types: List[int] = []
     probabilities: List[float] = []
@@ -104,12 +104,12 @@ def get_probability_for_next_symbol_being_one(
         )
     for curr_type in range(training_set_size + 1):
         probability_of_type_and_theta = [
-            weights[curr_index]*probability_of_type_given_theta[thetas[curr_index]][curr_type]
+            weights[curr_index]*probability_of_type_given_theta[thetas[curr_index].item()][curr_type]
             for curr_index in range(len(thetas))
         ]
         probability_of_type = sum(probability_of_type_and_theta)
         probability_of_type_and_theta_times_theta = [
-            weights[curr_index]*probability_of_type_given_theta[thetas[curr_index]][curr_type]*thetas[curr_index]
+            weights[curr_index]*probability_of_type_given_theta[thetas[curr_index].item()][curr_type]*thetas[curr_index]
             for curr_index in range(len(thetas))
         ]
         training_types.append(curr_type)
@@ -191,16 +191,16 @@ class IterativeAlgorithmSolver:
         self._probability_for_next_symbol_being_one: Optional[NextSymbolProbabilities] = None
         print(f'solver initialization time is {time.time() - t0}')
 
-    def _get_type_probability_all_thetas(self, number_of_outcomes: int) -> Dict[float, np.ndarray]:
+    def _get_type_probability_all_thetas(self, number_of_outcomes: int) -> Dict[float, tr.tensor]:
             return _get_type_probabilities_vs_theta(number_of_outcomes=number_of_outcomes, thetas=self.thetas)
 
-    def get_sequence_entropy_given_types_probabilities(self, vector: np.ndarray):
-        return -np.sum(vector * (np.log(vector) - self.types_log_binomial_coefficients[len(vector) - 1]))
+    def get_sequence_entropy_given_types_probabilities(self, vector: tr.tensor):
+        return -tr.sum(vector * (tr.log(vector) - self.types_log_binomial_coefficients[len(vector) - 1]))
 
-    def get_average_probability_of_outcome(self, weights: np.ndarray, thetas: np.ndarray, number_of_outcomes: int):
-        probabilities = np.asarray([0. for _ in range(number_of_outcomes + 1)])
+    def get_average_probability_of_outcome(self, weights: tr.tensor, thetas: tr.tensor, number_of_outcomes: int):
+        probabilities = tr.tensor([0. for _ in range(number_of_outcomes + 1)])
         for index in range(len(weights)):
-            curr_probabilities = self.type_probabilities_given_theta[number_of_outcomes][thetas[index]]
+            curr_probabilities = self.type_probabilities_given_theta[number_of_outcomes][thetas[index].item()]
             probabilities += weights[index] * curr_probabilities
         return probabilities
 
@@ -219,17 +219,17 @@ class IterativeAlgorithmSolver:
         return self._probability_for_next_symbol_being_one
 
     def get_weighted_outcomes_log_loss_wrt_true_theta(
-        self, theta: float, average_type_probabilities: np.ndarray
+        self, theta: float, average_type_probabilities: tr.tensor
     ) -> float:
         number_of_outcomes = len(average_type_probabilities) - 1
         true_probabilities = self.type_probabilities_given_theta[number_of_outcomes][theta]
         return -sum(
             true_probabilities*(
-                    np.log(average_type_probabilities) - self.types_log_binomial_coefficients[number_of_outcomes]
+                    tr.log(average_type_probabilities) - self.types_log_binomial_coefficients[number_of_outcomes]
             )
         )
 
-    def get_divergences(self, thetas: np.ndarray, weights: np.ndarray, training_size: int) -> np.ndarray:
+    def get_divergences(self, thetas: tr.tensor, weights: tr.tensor, training_size: int) -> tr.tensor:
         divergences = thetas * 0
         average_probabilities_training_size = self.get_average_probability_of_outcome(
             weights=weights, thetas=thetas, number_of_outcomes=training_size
@@ -238,7 +238,7 @@ class IterativeAlgorithmSolver:
             weights=weights, thetas=thetas, number_of_outcomes=self.whole_sequence_size
         )
         for curr_index in range(len(thetas)):
-            curr_theta = thetas[curr_index]
+            curr_theta = thetas[curr_index].item()
             a0 = get_binary_entropy(theta=curr_theta)
             a1 = self.get_weighted_outcomes_log_loss_wrt_true_theta(
                 theta=curr_theta, average_type_probabilities=average_probabilities_training_size
