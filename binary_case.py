@@ -5,9 +5,12 @@ from typing import List, Dict, Optional, Callable
 import os
 
 from scipy.stats import binom
+from scipy.stats import multinomial
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.special import comb
+
+OUTPUTS_PATH = 'outputs/ab_log/'
 
 Samples = int
 PositiveSamples = int
@@ -32,17 +35,31 @@ class NextSymbolProbabilities:
 
 
 def get_type_probabilities_given_theta(theta: float, number_of_outcomes: int) -> np.ndarray:
-    return np.asarray([binom.pmf(index, number_of_outcomes, theta) for index in range(number_of_outcomes + 1)])
+    type_prob_array = np.asarray([], dtype=np.longdouble)
+    for i in range(0, number_of_outcomes + 1):
+        for j in range(0, number_of_outcomes + 1):
+            if i + j <= number_of_outcomes:
+                type_prob_array = np.append(type_prob_array, multinomial.pmf([i, j], n=number_of_outcomes, p=theta[0:2]))
+    return type_prob_array
 
 
 def get_binary_entropy(theta: float) -> float:
-    if theta == 0 or theta == 1:
-        return 0.
-    return - theta * np.log(theta) - ((1-theta) * np.log(1-theta))
+    ent = 0
+    for sub_theta in range(len(theta)):
+        if sub_theta == 0 or sub_theta == 1:
+            pass
+        else:
+            ent += - sub_theta * np.log(sub_theta + 1e-59)
+    return ent
 
 
 def _get_types_log_binomial_coefficients(number_of_outcomes: int) -> np.ndarray:
-    return np.log(np.asarray([comb(number_of_outcomes, k) for k in range(number_of_outcomes + 1)]))
+    types_log_binomial_coef = np.asarray([], dtype=np.longdouble)
+    for i in range(0, number_of_outcomes + 1):
+        for j in range(0, number_of_outcomes + 1):
+            if i + j <= number_of_outcomes:
+                types_log_binomial_coef = np.append(types_log_binomial_coef, comb(number_of_outcomes, i) * comb(number_of_outcomes - i, j))
+    return types_log_binomial_coef
 
 
 def _get_type_probabilities_vs_theta(thetas: np.ndarray, number_of_outcomes: int) -> Dict[float, np.ndarray]:
@@ -69,11 +86,18 @@ def _rescale_resolution(thetas: np.ndarray, weights: np.ndarray, new_thetas) -> 
 
 
 def get_divergence(p: float, q: float):
-    if p == 0:
-        return -np.log(1-q)
-    if p == 1:
-        return -np.log(q)
-    return p * np.log(p / q) + (1-p) * np.log((1-p) / (1-q))
+
+    d_arr = []
+    for i in range(len(p)):
+        if p[i] == 0:
+            d = 0 #-np.log(1-q[i] + 1e-59)
+        elif p[i] == 1:
+            d = 0 #-np.log(q[i] + 1e-59)
+        else:
+            d =  p[i] * np.log(p[i] / q[i] + 1e-59)
+        d_arr.append(d)
+
+    return np.sum(d_arr)
 
 
 def get_regret_specific_empirical_distribution(
@@ -84,9 +108,15 @@ def get_regret_specific_empirical_distribution(
 
 
 def get_average_regret(p: float, samples: int, probability_assigner: ProbabilityAssigner) -> float:
-    return sum([binom.pmf(n, samples, p) * get_regret_specific_empirical_distribution(
-        p=p, samples=samples, positives=n, probability_assigner=probability_assigner
-    ) for n in range(samples + 1)])
+    print(p)
+    avg_reg_arr = []
+    for i in range(samples + 1):
+        for j in range(samples + 1):
+            if i + j <= samples:
+                avg_reg_arr.append(multinomial.pmf([i, j], n=samples, p=p[0:2]) * 
+                                   get_regret_specific_empirical_distribution(p=p, samples=samples, positives=(i, j), probability_assigner=probability_assigner))
+                
+    return np.sum(avg_reg_arr)
 
 
 def get_probability_for_next_symbol_being_one(
@@ -119,13 +149,17 @@ def get_probability_for_next_symbol_being_one(
 
 
 def braess_probability_assignment(samples: int, positives: int):
-    if positives == 0 or positives == samples:
-        beta = 0.5
-        return np.divide(positives + beta, samples + 2*beta)
-    if positives == samples - 1 or positives == 1:
-        beta = 1
-        return np.divide(positives + beta, samples + 2*beta)
-    return np.divide(positives + 0.75, samples + 1.5)
+    beta = np.asarray([0, 0, 0], dtype=np.longdouble)
+    nums = np.asarray([positives[0], positives[1], samples - (positives[0] + positives[1])], dtype=np.longdouble)
+    for i in range(len(nums)):
+        if nums[i] == 0 or nums[i] == samples:
+            beta[i] = 0.5
+        elif nums[i] == samples - 1 or nums[i] == 1:
+            beta[i] = 1
+        else:
+            beta[i] = 0.75
+
+    return np.divide(nums + beta, samples + 2*beta)
 
 
 def get_braess_probability_assignment_for_each_case(samples: int) -> np.ndarray:
@@ -160,8 +194,8 @@ class IterativeAlgorithmSolver:
     ):
         t0 = time.time()
         self.number_of_thetas = number_of_thetas
-        self.thetas = np.linspace(0.2, 0.8, self.number_of_thetas)
-        self.weights = self.thetas*0 + np.divide(1, number_of_thetas)
+        self._get_thetas()
+        self.weights = [np.divide(1, number_of_thetas) for _ in self.thetas]
         self.training_set_size = training_set_size
         self.whole_sequence_size = self.training_set_size + 1
         if initialization is not None:
@@ -190,14 +224,26 @@ class IterativeAlgorithmSolver:
         self._probability_for_next_symbol_being_one: Optional[NextSymbolProbabilities] = None
         print(f'solver initialization time is {time.time() - t0}')
 
+    def _get_thetas(self):
+        
+        self.thetas = []
+        for theta_a in np.linspace(0, 1, self.number_of_thetas):
+            for theta_b in np.linspace(0, 1, self.number_of_thetas):
+                if theta_a + theta_b <= 1:
+                    self.thetas.append((theta_a, theta_b, 1 - (theta_a + theta_b)))
+
     def _get_type_probability_all_thetas(self, number_of_outcomes: int) -> Dict[float, np.ndarray]:
             return _get_type_probabilities_vs_theta(number_of_outcomes=number_of_outcomes, thetas=self.thetas)
 
-    def get_sequence_entropy_given_types_probabilities(self, vector: np.ndarray):
-        return -np.sum(vector * (np.log(vector) - self.types_log_binomial_coefficients[len(vector) - 1]))
+    def get_sequence_entropy_given_types_probabilities(self, sample: int, vector: np.ndarray):
+        return -np.sum(vector * (np.log(vector + 1e-59) - self.types_log_binomial_coefficients[sample]))
 
     def get_average_probability_of_outcome(self, weights: np.ndarray, thetas: np.ndarray, number_of_outcomes: int):
-        probabilities = np.asarray([0. for _ in range(number_of_outcomes + 1)])
+        probabilities = np.asarray([], dtype=np.longdouble)
+        for i in range(number_of_outcomes + 1):
+            for j in range(number_of_outcomes + 1):
+                if i + j <= number_of_outcomes:
+                    probabilities = np.append(probabilities, 0.)
         for index in range(len(weights)):
             curr_probabilities = self.type_probabilities_given_theta[number_of_outcomes][thetas[index]]
             probabilities += weights[index] * curr_probabilities
@@ -218,18 +264,18 @@ class IterativeAlgorithmSolver:
         return self._probability_for_next_symbol_being_one
 
     def get_weighted_outcomes_log_loss_wrt_true_theta(
-        self, theta: float, average_type_probabilities: np.ndarray
+        self, theta: float, sample: int, average_type_probabilities: np.ndarray
     ) -> float:
-        number_of_outcomes = len(average_type_probabilities) - 1
+        number_of_outcomes = sample
         true_probabilities = self.type_probabilities_given_theta[number_of_outcomes][theta]
         return -sum(
             true_probabilities*(
-                    np.log(average_type_probabilities) - self.types_log_binomial_coefficients[number_of_outcomes]
+                    np.log(average_type_probabilities + 1e-59) - self.types_log_binomial_coefficients[number_of_outcomes]
             )
         )
 
     def get_divergences(self, thetas: np.ndarray, weights: np.ndarray, training_size: int) -> np.ndarray:
-        divergences = thetas * 0
+        divergences = np.asarray([0. for _ in thetas])
         average_probabilities_training_size = self.get_average_probability_of_outcome(
             weights=weights, thetas=thetas, number_of_outcomes=training_size
         )
@@ -240,10 +286,10 @@ class IterativeAlgorithmSolver:
             curr_theta = thetas[curr_index]
             a0 = get_binary_entropy(theta=curr_theta)
             a1 = self.get_weighted_outcomes_log_loss_wrt_true_theta(
-                theta=curr_theta, average_type_probabilities=average_probabilities_training_size
+                theta=curr_theta, sample=training_size, average_type_probabilities=average_probabilities_training_size
             )
             a2 = self.get_weighted_outcomes_log_loss_wrt_true_theta(
-                theta=curr_theta, average_type_probabilities=average_probabilities_whole_sequence
+                theta=curr_theta, sample=self.whole_sequence_size, average_type_probabilities=average_probabilities_whole_sequence
             )
             divergences[curr_index] = a2 - (a0 + a1)
         return divergences
@@ -267,9 +313,9 @@ class IterativeAlgorithmSolver:
             weights=self.weights, thetas=self.thetas, number_of_outcomes=self.whole_sequence_size
         )
         whole_sequence_log_loss = self.get_sequence_entropy_given_types_probabilities(
-            average_probabilities_whole_sequence
+            self.whole_sequence_size, average_probabilities_whole_sequence
         )
-        training_log_loss = self.get_sequence_entropy_given_types_probabilities(average_probabilities_training_size)
+        training_log_loss = self.get_sequence_entropy_given_types_probabilities(self.training_set_size, average_probabilities_training_size)
         return whole_sequence_log_loss - (training_log_loss + self.get_average_binary_entropy())
 
     def plot_results(self):
@@ -278,12 +324,12 @@ class IterativeAlgorithmSolver:
             return
         plt.plot(self.solution.capacities)
         plt.title('capacity per iteration')
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_capacity.png')
+        plt.savefig(OUTPUTS_PATH + f'plots/solver_n_{self.training_set_size}_capacity.png')
         # plt.waitforbuttonpress()
         plt.close()
         plt.plot(self.max_divergence_to_average_divergence_ratio)
         plt.title('max to average divergence ratio')
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_divergence.png')
+        plt.savefig(OUTPUTS_PATH + f'plots/solver_n_{self.training_set_size}_divergence.png')
         # plt.waitforbuttonpress()
         plt.close()
         best_weights = self.solution.weights[-1]
@@ -293,7 +339,7 @@ class IterativeAlgorithmSolver:
         plt.xlim(min(self.solution.thetas) + x_range/5, max(self.solution.thetas) - x_range/5)
         plt.title('weight per theta')
         plt.legend()
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_weight_short.png')
+        plt.savefig(OUTPUTS_PATH + f'plots/solver_n_{self.training_set_size}_weight_short.png')
         # plt.waitforbuttonpress()
         plt.close()
         best_weights = self.solution.weights[-1]
@@ -302,7 +348,7 @@ class IterativeAlgorithmSolver:
         plt.xlim(min(self.solution.thetas) + x_range/5, max(self.solution.thetas) - x_range/5)
         plt.title('weight per theta')
         plt.legend()
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_weight_log_short.png')
+        plt.savefig(OUTPUTS_PATH + f'plots/solver_n_{self.training_set_size}_weight_log_short.png')
         # plt.waitforbuttonpress()
         plt.close()
         probabilities = self.probabilities_of_next_symbol_being_one()
@@ -314,7 +360,7 @@ class IterativeAlgorithmSolver:
         plt.plot(list(range(self.training_set_size + 1)), brass_probabilities, label='Braess-Sauer')
         plt.legend()
         plt.title('probability of next symbol being one given type')
-        plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_p_next_symbol.png')
+        plt.savefig(OUTPUTS_PATH + f'plots/solver_n_{self.training_set_size}_p_next_symbol.png')
         # plt.waitforbuttonpress()
         plt.close()
         if not isinstance(probabilities, list):
@@ -324,7 +370,7 @@ class IterativeAlgorithmSolver:
             plt.plot([0, max(probabilities.training_type)], [0.75, 0.75], label='beta=0.75')
             plt.plot([0, max(probabilities.training_type)], [1, 1], label='beta=1')
             plt.title('derived add-beta')
-            plt.savefig(f'plots/conditional/solver_n_{self.training_set_size}_add_beta.png')
+            plt.savefig(OUTPUTS_PATH + f'plots/solver_n_{self.training_set_size}_add_beta.png')
             # plt.waitforbuttonpress()
             plt.close()
 
@@ -398,16 +444,16 @@ def _main_dump_results(training_set_size: int, num_of_thetas: int, iterations: i
     )
     solver.single_step_am(iterations=iterations, calc_probability=True, minimal_divergence_ratio=1.001)
     # time_str = time.strftime("_%H-%M-%S_%d-%m-%Y", time.localtime())
-    pickle.dump(solver, open(f'outputs/conditional/solver_n_{training_set_size}.pkl', 'wb'))
+    pickle.dump(solver, open(OUTPUTS_PATH + f'data/solver_n_{training_set_size}.pkl', 'wb'))
 
 
 def _main_plot_results(training_set_size: int):
-    a: IterativeAlgorithmSolver = pickle.load(open(f'outputs/conditional/solver_n_{training_set_size}.pkl', 'rb'))
+    a: IterativeAlgorithmSolver = pickle.load(open(OUTPUTS_PATH + f'data/solver_n_{training_set_size}.pkl', 'rb'))
     a.plot_results()
 
 
 def _main_print_results(training_set_size: int):
-    a: IterativeAlgorithmSolver = pickle.load(open(f'outputs/conditional/solver_n_{training_set_size}.pkl', 'rb'))
+    a: IterativeAlgorithmSolver = pickle.load(open(OUTPUTS_PATH + f'data/solver_n_{training_set_size}.pkl', 'rb'))
     a.print_interesting_solution_properties()
 
 
@@ -428,7 +474,7 @@ def _main_print_results(training_set_size: int):
 #     print(f'delta is {b1 - a1}')
 
 def _check_zero_low_probabilities(training_set_size: int):
-    a: IterativeAlgorithmSolver = pickle.load(open(f'solver_n_{training_set_size}.pkl', 'rb'))
+    a: IterativeAlgorithmSolver = pickle.load(open(OUTPUTS_PATH + f'data/solver_n_{training_set_size}.pkl', 'rb'))
     c0 = a.get_capacity()
     a.zero_low_probabilities(ratio_to_median_threshold=0.1)
     c1 = a.get_capacity()
@@ -438,14 +484,14 @@ def _check_zero_low_probabilities(training_set_size: int):
 
 if __name__ == '__main__':
 
-    training_set_size = 100
+    training_set_size = 10
     training_set_size_step = 100
-    number_of_thetas = 2000
+    number_of_thetas = 3
     number_of_thetas_step = 0
-    iterations = 10000
+    iterations = 10
     iterations_step = 0
 
-    for training_set_size in range(100, 200, 100):
+    for training_set_size in range(100, 110, 100):
         _main_dump_results(training_set_size=training_set_size, num_of_thetas=number_of_thetas, iterations=iterations)
 
     # check_initialization_difference(200)
@@ -460,6 +506,6 @@ if __name__ == '__main__':
     # _main_plot_results(100)
     # _main_print_results(100)
     # _check_zero_low_probabilities(50)
-    for training_set_size in range(100, 200, 100):
+    for training_set_size in range(100, 110, 100):
         _main_print_results(training_set_size)
         _main_plot_results(training_set_size)
