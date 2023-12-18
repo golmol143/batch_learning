@@ -51,7 +51,7 @@ def plot_r_dr_C(theta_vector: tr.Tensor, output_size: int, r: tr.Tensor, dr: tr.
 
     ax = fig.add_subplot(1, 3, 3)
     ax.plot(C, '*')
-    ax.set_title('C={}'.format(C[-1]))
+    ax.set_title('C={}'.format(C[-1][0]))
     ax.set_xlabel('{} iterations'.format(len(C)))
     ax.set_ylabel('Capacity') 
     ax.set_ylim([0, max(C) * 1.1])
@@ -89,16 +89,17 @@ def plot_r_and_C(theta_vector: tr.Tensor, output_size: int, r: tr.Tensor, C: tr.
 
     fig = plt.figure()
 
+    fig.suptitle('Bernoulli: input_size={} output_size={}'.format(len(theta_vector), output_size)) 
     ax = fig.add_subplot(1, 2, 2)
-    ax.plot(C, '*')
-    ax.set_title('Bernoulli: input_size={} output_size={}\nC={}'.format(len(theta_vector), output_size, C[-1])) 
+    ax.plot(C, 'bo')
+    ax.set_title('C={}'.format(C[-1][0])) 
     ax.set_xlabel('{} iterations'.format(len(C)))
     ax.set_ylabel('Capacity') 
     ax.set_ylim([0, max(C) * 1.1])
     ax.grid()
 
     bx = fig.add_subplot(1, 2, 1)
-    bx.plot(theta_vector, r, '*')
+    bx.plot(theta_vector, r, 'bo')
     bx.set_title(r'w($\theta$)') 
     bx.set_xlabel(r'$\theta$')
     bx.set_ylabel(r'w($\theta$)') 
@@ -150,7 +151,7 @@ def plot_C(theta_vector: tr.Tensor, output_size: int, C: tr.Tensor):
 
     ax = fig.add_subplot(1, 1, 1)
     ax.plot(C, '*')
-    ax.set_title('C={}'.format(C[-1]))
+    ax.set_title('C={}'.format(C[-1][0]))
     ax.set_xlabel('{} iterations'.format(len(C)))
     ax.set_ylabel('Capacity') 
     ax.set_ylim([0, max(C) * 1.1])

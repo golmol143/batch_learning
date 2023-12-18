@@ -6,9 +6,9 @@ import torch as tr
 import math
 import argparse
 
-def whole_BA(output_size: int, d_threshold: float = 0.0002, d_step:float = 0.00001, use_cuda: bool = True):
+def whole_BA(output_size: int, d_threshold: float = 0.0002, d_step:float = 1e-8, use_cuda: bool = True):
 
-    initial_input_size = math.floor(output_size ** (63/100))
+    initial_input_size = math.floor(output_size ** (75/100))
 
     # BerObj = Ber(initial_input_size, output_size)
     BerObj = BerTypes(initial_input_size, output_size)
@@ -104,7 +104,7 @@ def main():
     file_name = time.strftime("%H-%M-%S_%d-%m-%Y.pt", t)
     file_obj = {'theta': theta_vector, 'r': r, 'C': C}
 
-    path = './outputs/' #r'D:/User/University/MSc/final_project/files/'
+    path = './outputs/classic/data/' #r'D:/User/University/MSc/final_project/files/'
     tr.save(file_obj, path+input_x_output+file_name)
 
 if __name__ == "__main__":

@@ -59,7 +59,7 @@ def check_if_one_more_delta(BerObj: Ber, C : float, d_threshold: float = 0.02, d
         theta_vector_helper = BerObj.theta_vector + [0.5]
     else:
         theta_vector_helper = BerObj.theta_vector + [0.5 - step, 0.5 + step]
-        theta_vector_helper.remove(0.5)
+        theta_vector_helper.remove(theta_vector_helper[math.floor(BerObj.input_size / 2)])
     theta_vector_helper.sort()
 
     BerObj.update_input_size(len(theta_vector_helper), theta_vector_helper)
@@ -110,7 +110,7 @@ def blahut_arimoto_derivative(BerObj: Ber,  d_threshold: float, d_step: float = 
 
     need_fixing = True
     iterations = 0
-    while need_fixing:
+    while need_fixing:# and iterations < max_iter:
         # print("[-] Calibrating deltas, iteration {}".format(iterations + 1))
         new_theta_vector = BerObj.theta_vector
         middle_index = int((BerObj.input_size - 1) / 2) if odd else int(BerObj.input_size / 2)
